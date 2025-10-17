@@ -463,7 +463,7 @@ utils = {};
   level5.pathfinding.white = [1, 1, 1];
 
   level5.pathfinding.getColorByZone = function(zone, enabled) {
-    return enabled ? (level5.pathfinding.zoneColors[zone % level5.pathfinding.zoneColors.length] || white) : white;
+    return enabled ? (level5.pathfinding.zoneColors[zone % level5.pathfinding.zoneColors.length] || level5.pathfinding.white) : level5.pathfinding.white;
   }
 
   level5.pathfinding.float32ArrayToBase64 = function(arr) {

@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Yo-kai Watch Pathfinding Visualiser</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 2em;
+      background: #f0f0f0;
+    }
+    textarea {
+      width: 100%;
+      height: 300px;
+      font-family: monospace;
+      font-size: 14px;
+    }
+    button {
+      padding: 10px 20px;
+      margin-top: 1em;
+      font-size: 16px;
+    }
+    label {
+      display: inline-block;
+      margin-top: 1em;
+      font-size: 15px;
+    }
+    #downloadLink {
+      display: block;
+      margin-top: 1em;
+      font-weight: bold;
+      font-size: 18px;
+    }
+  </style>
+</head>
+<body>
+
+<h1>Yo-kai Watch Pathfinding Visualiser</h1>
+<!-- <p>Paste your JSON below and click "Generate glTF".</p> -->
+<!-- <textarea id="jsonInput" placeholder="Paste your ASTARBIN JSON here..."></textarea> -->
+<input type="file" id="fileInput" accept=".astarbin">
+<br />
+<label>
+  <input type="checkbox" id="colorCode" checked>
+  Colour-Code Nodes by Zone
+</label>
+<br />
+<button id="generateBtn" disabled>Generate glTF</button>
+<a id="downloadLink" href="#" download="astar_nodes.gltf" style="display:none;">Download glTF</a>
+
+<script>
+/**
+ * cfgbin-lib.js
+ * ------------------------------------------------------------
+ * MIT License lib by n123git on github and n123original on discord. places API functions in globalThis.level5.cfgbin
+ * ------------------------------------------------------------
+ *
+ *
+ * - parseCfgBin(buffer, options?) -> { header, tree, entriesFlat, ... }
+ *   Parses a cfg.bin binary file into structured JS objects.
+ *   - `buffer`: ArrayBuffer or Uint8Array input.
+ *   - `options.encProvider`: optional { encode, decode } provider for SHIFT_JIS.
+ *   - Returns metadata, entries, string table, key table, and parsed tree.
+ *
+ * - **serialise.(tree, options?)** → Uint8Array
+ *   Serialises a JS tree back into binary cfg.bin format.9
+ *   - `tree`: Parsed tree or modified data.
+ *   - `options.encoding`: 'utf-8' | 'shift-jis'.
+ *   - `options.trailer`: append encoding marker (default: true).
+ *   - Returns a new Uint8Array representing the rebuilt binary file.
+ *
+ * - **parseMytagsText(text)** → Object
+ *   Parses a simple MyTags text format into a tag mapping.
+ *
+ * - **buildVisualTree(tree)** → Object
+ *   Groups related entries into structured hierarchy (for display).
+ *
+ * - **updateSmartParsing(tree)**
+ *   Adjusts certain node values based on smart heuristics.
+ *
+ * ### Utilities
+ * - **crc32(buffer)** — Compute CRC32 hash (used for key names).
+ * - **findSequence(buffer, seq)** — Find a byte sequence in buffer.
+ * - **flattenTree(tree, out)** — Flatten hierarchical nodes into array.
+ * - **findTrailerIndex(buffer)** — Find trailer marker position.
+ *
+ * ### Internal Classes
+ * - **BinReader(buffer)** — Binary stream reader with DataView helpers.
+ * - **BinWriter()** — Binary stream writer for constructing new buffers.
+ *
+ * ### Example
+ * ```js
+ * import cfgbin from './cfgbin-lib.js';
+ * 
+ * const buffer = await fs.promises.readFile('cfg.bin');
+ * const parsed = cfgbin.parseCfgBin(buffer);
+ * console.log(parsed.tree);
+ * 
+ * // Modify entries
+ * parsed.tree[0].variables[0].value = 42;
+ * 
+ * // Rebuild binary
+ * const rebuilt = cfgbin.serialize(parsed.tree);
+ * await fs.promises.writeFile('cfg_new.bin', Buffer.from(rebuilt));
+ * ```
+ *
+ * ------------------------------------------------------------
+ */
+
+
+if(typeof globalThis.level5 == "undefined") globalThis.level5 = {};
+if(typeof globalThis.level5.cfgbin == "undefined") globalThis.level5.cfgbin = {};
+
+(function(){
+// --- Binary helpers ------------------------------------------------------
+class BinReader {
+  constructor(buffer){
+    if(buffer instanceof ArrayBuffer) this.u8 = new Uint8Array(buffer);
+    else if(buffer instanceof Uint8Array) this.u8 = buffer;
+    else throw new Error('BinReader expects ArrayBuffer or Uint8Array');
+    this.view = new DataView(this.u8.buffer, this.u8.byteOffset, this.u8.byteLength);
+    this.pos = 0;
+    this.length = this.u8.byteLength;
+  }
+  seek(p){ this.pos = p; }
+  tell(){ return this.pos; }
+  readUint8(){ return this.u8[this.pos++]; }
+  readInt32(){ const v = this.view.getInt32(this.pos,true); this.pos+=4; return v; }
+  readUint32(){ const v = this.view.getUint32(this.pos,true); this.pos+=4; return v; }
+  readFloat(){ const v = this.view.getFloat32(this.pos,true); this.pos+=4; return v; }
+  readBytes(n){ const s = this.u8.slice(this.pos,this.pos+n); this.pos+=n; return s; }
+  readStringAt(offset){ let pos = offset; const u8 = this.u8; let end = pos; while(end < u8.length && u8[end] !== 0) end++; return u8.slice(pos, end); }
+  readNullTerminated(enc){ let start = this.pos; while(this.pos < this.length && this.u8[this.pos] !== 0) this.pos++; const s = this.u8.slice(start, this.pos); this.pos++; return s; }
+  getSection(offset, size){ return this.u8.slice(offset, offset + size).buffer; }
+}
+
+class BinWriter {
+  constructor(){ this.parts = []; this.pos = 0; }
+  writeBytes(u8){ this.parts.push(u8); this.pos += u8.length; }
+  writeUint32(v){ const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, v, true); this.writeBytes(b); }
+  writeInt32(v){ const b = new Uint8Array(4); new DataView(b.buffer).setInt32(0, v, true); this.writeBytes(b); }
+  writeFloat(v){ const b = new Uint8Array(4); new DataView(b.buffer).setFloat32(0, v, true); this.writeBytes(b); }
+  writeUint8(v){ this.writeBytes(new Uint8Array([v&0xFF])); }
+  writeAlignment(align, pad=0xFF){ if(align<=1) return; const rem = this.pos % align; if(rem !== 0){ const need = align - rem; this.writeBytes(new Uint8Array(need).fill(pad)); } }
+  writeAtStart(bytes){ this.parts.unshift(bytes); }
+  concat(){ let total = this.parts.reduce((s,p)=>s+p.length,0); const out = new Uint8Array(total); let o=0; for(const p of this.parts){ out.set(p,o); o += p.length; } return out.buffer; }
+}
+
+// --- CRC32 ---------------------------------------------------------------
+function crc32(buf){
+  const u8 = (buf instanceof Uint8Array) ? buf : new Uint8Array(buf);
+  const table = crc32.table || (crc32.table = (function(){ let t=new Uint32Array(256); for(let i=0;i<256;i++){ let r = i; for(let j=0;j<8;j++) r = (r & 1) ? (0xEDB88320 ^ (r >>> 1)) : (r >>> 1); t[i]=r; } return t; })());
+  let crc = 0xFFFFFFFF; for(let i=0;i<u8.length;i++){ crc = (crc >>> 8) ^ table[(crc ^ u8[i]) & 0xFF]; } return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function findSequence(buf, seq){ const u = (buf instanceof Uint8Array) ? buf : new Uint8Array(buf); for(let i=0;i+seq.length<=u.length;i++){ let ok=true; for(let j=0;j<seq.length;j++){ if(u[i+j]!==seq[j]){ok=false;break;} } if(ok) return i; } return -1; }
+
+// --- Encoding helpers (supports optional encProvider for SHIFT_JIS) -----
+function decodeBytesToString(bytesU8, enc='utf-8', encProvider){
+  try{
+    if(enc === 'shift-jis'){
+      if(encProvider && typeof encProvider.decode === 'function') return encProvider.decode(bytesU8, 'SHIFT_JIS');
+      // try built-in TextDecoder fallback
+      try{ return new TextDecoder('shift-jis').decode(bytesU8); } catch(e){}
+      return new TextDecoder('utf-8').decode(bytesU8);
+    } else {
+      return new TextDecoder('utf-8').decode(bytesU8);
+    }
+  } catch(e){ return new TextDecoder('utf-8').decode(bytesU8); }
+}
+
+function encodeStringToBytes(str, enc='utf-8', encProvider){
+  try{
+    if(enc === 'shift-jis'){
+      if(encProvider && typeof encProvider.encode === 'function') return encProvider.encode(str, 'SHIFT_JIS');
+      try{ return new TextEncoder('shift-jis').encode(str); } catch(e){}
+      return new TextEncoder().encode(str);
+    } else { return new TextEncoder().encode(str); }
+  } catch(e){ return new TextEncoder().encode(str); }
+}
+
+// helpers for numeric hex views
+function int32ToBytes(i){ const b = new Uint8Array(4); new DataView(b.buffer).setInt32(0, i, true); return b; }
+function uint32ToBytes(u){ const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, u, true); return b; }
+function floatToBytes(f){ const b = new Uint8Array(4); new DataView(b.buffer).setFloat32(0, f, true); return b; }
+function bytesToHex(u8){ return Array.from(u8).map(x=>x.toString(16).padStart(2,'0').toUpperCase()).join(' '); }
+
+// --- MyTags parsing -----------------------------------------------------
+function parseMytagsText(txt){ // simple parser for format: GAME [ ... ]
+  txt = txt.replace(/\r/g,''); const games = {};
+  const gameRe = /([A-Za-z0-9_\-]+)\s*\[((?:.|\n)*?)\]/gm; let m;
+  while((m = gameRe.exec(txt)) !== null){ const gname = m[1].trim(); const body = m[2]; const entries = {};
+    const entryRe = /([A-Za-z0-9_\-]+)\s*\(([^)]*)\)/gm; let em;
+    while((em = entryRe.exec(body)) !== null){ const rname = em[1].trim(); const inner = em[2]; const lines = inner.split(/\n/).map(s=>s.trim()).filter(s=>s.length>0); const props = []; for(const line of lines){ const parts = line.split('|').map(p=>p.trim()); const label = parts[0]||''; const showHex = parts[1] && parts[1].toLowerCase() === 'true'; props.push({label, showHex}); } entries[rname] = props; }
+    games[gname] = entries; }
+  return games; }
+
+// --- Parsing / tree building -------------------------------------------
+function readInt32LE(view, offset){ return view.getInt32(offset, true); }
+
+function parseCfgBin(buffer, opts = {}){
+  // buffer: ArrayBuffer or Uint8Array
+  const encProvider = opts.encProvider; // optional { encode, decode }
+  const bytes = (buffer instanceof Uint8Array) ? buffer : new Uint8Array(buffer);
+  if(bytes.byteLength < 16) throw new Error('File too small');
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const header = { EntriesCount: readInt32LE(view,0), StringTableOffset: readInt32LE(view,4), StringTableLength: readInt32LE(view,8), StringTableCount: readInt32LE(view,12) };
+
+  // detect encoding via trailer marker
+  const marker = [0x01,0x74,0x32,0x62,0xFE];
+  const idx = findSequence(bytes, marker);
+  let encodingDetected = 'utf-8';
+  if(idx >= 0 && bytes.byteLength >= idx+8){ const encByte = bytes[idx + 6]; encodingDetected = (encByte === 0 ? 'shift-jis' : 'utf-8'); }
+
+  // entries area is between 0x10 and string table offset
+  const entriesBuffer = bytes.slice(0x10, header.StringTableOffset);
+  // string table
+  const stringsMap = {};
+  if(header.StringTableOffset > 0 && header.StringTableLength > 0 && header.StringTableOffset + header.StringTableLength <= bytes.byteLength){
+    const st = new Uint8Array(bytes.buffer, bytes.byteOffset + header.StringTableOffset, header.StringTableLength);
+    let pos=0;
+    for(let i=0;i<header.StringTableCount && pos < st.length;i++){
+      const start = pos; while(pos < st.length && st[pos] !== 0) pos++; const slice = st.slice(start,pos); const str = decodeBytesToString(slice, encodingDetected, encProvider); stringsMap[start] = str; pos++; }
+  }
+
+  // key table parsing using C# KeyHeader struct
+  const keyTableOffset = Math.ceil((header.StringTableOffset + header.StringTableLength)/16)*16;
+  const keyTable = {};
+  if(keyTableOffset + 16 <= bytes.byteLength){
+    const ktView = new DataView(bytes.buffer, bytes.byteOffset + keyTableOffset, 16);
+    const KeyLength = ktView.getInt32(0, true);
+    const KeyCount = ktView.getInt32(4, true);
+    const KeyStringOffset = ktView.getInt32(8, true);
+    const keyStringLength = ktView.getInt32(12, true);
+    if(KeyLength > 0 && KeyCount > 0 && keyTableOffset + KeyLength <= bytes.byteLength){
+      let pos = keyTableOffset + 16; for(let i=0;i<KeyCount;i++){
+        const crc = new DataView(bytes.buffer, bytes.byteOffset + pos, 4).getUint32(0, true);
+        const relOff = new DataView(bytes.buffer, bytes.byteOffset + pos + 4, 4).getInt32(0, true);
+        const strPos = keyTableOffset + KeyStringOffset + relOff;
+        let keyStr = null;
+        if(strPos >= 0 && strPos < bytes.byteLength){ let p = strPos; const u8 = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength); let end = p; while(end < bytes.byteLength && u8[end] !== 0) end++; const slice = u8.slice(p, end); keyStr = decodeBytesToString(slice, encodingDetected, encProvider); }
+        keyTable[crc] = keyStr || ('CRC_' + crc.toString(16).toUpperCase()); pos += 8;
+      }
+    }
+  }
+
+  const entriesFlat = parseEntries(header.EntriesCount, entriesBuffer, keyTable, stringsMap, encodingDetected);
+  const tree = processEntries(entriesFlat);
+
+  if(opts.smartParsing !== false) updateSmartParsing(tree);
+
+  return { header, encodingDetected, stringsMap, keyTable, entriesFlat, tree };
+}
+
+function parseEntries(entriesCount, buf, keyTbl, stringsTbl, enc){
+  const reader = new BinReader(buf.buffer || buf);
+  const out = [];
+  for(let i=0;i<entriesCount;i++){
+    const crc = reader.readUint32(); const name = keyTbl[crc] || ('CRC_' + crc.toString(16).toUpperCase());
+    const paramCount = reader.readUint8(); const paramTypes = new Array(paramCount);
+    let paramIndex = 0;
+    const typeBytesCount = Math.ceil(paramCount/4);
+    for(let j=0;j<typeBytesCount;j++){ const b = reader.readUint8(); for(let k=0;k<4;k++){ if(paramIndex < paramCount){ const tag = (b >> (2*k)) & 3; paramTypes[paramIndex] = tag===0? 'string' : tag===1? 'int' : tag===2? 'float' : 'unknown'; paramIndex++; } } }
+    // align to 4 bytes
+    const posMod = reader.tell() % 4; if(posMod !== 0){ reader.seek(reader.tell() + (4 - posMod)); }
+    const variables = [];
+    for(let j=0;j<paramCount;j++){
+      if(paramTypes[j] === 'string'){
+        const offset = reader.readInt32(); let text = null; if(offset !== -1 && stringsTbl.hasOwnProperty(offset)) text = stringsTbl[offset]; variables.push({type:'string', value:text, rawOffset: offset, viewHex:false, unsigned:false});
+      } else if(paramTypes[j] === 'int'){
+        const v = reader.readInt32(); variables.push({type:'int', value: v, viewHex:false, unsigned:false});
+      } else if(paramTypes[j] === 'float'){
+        const v = reader.readFloat(); variables.push({type:'float', value: v, viewHex:false, unsigned:false});
+      } else {
+        const v = reader.readInt32(); variables.push({type:'unknown', value: v, viewHex:false, unsigned:false});
+      }
+    }
+    out.push({crc, name, variables});
+  }
+  return out;
+}
+
+function processEntries(entries){
+  const stack = []; const output = []; let i=0;
+  while(i < entries.length){
+    const entry = entries[i]; const name = entry.name; const variables = entry.variables;
+    const nameLower = name.toLowerCase();
+    const isBegin = /_beg$|_begin$|_start$/i.test(nameLower) || nameLower.indexOf('_ptree') !== -1 && nameLower.indexOf('_ptree')===nameLower.length-6;
+    const isEnd = /_end$/i.test(nameLower) || nameLower.indexOf('_ptree') !== -1;
+    if(isBegin){ const newNode = {name, variables, children: [], EndTerminator:false, _collapsed:false}; if(stack.length>0) stack[stack.length-1].children.push(newNode); else output.push(newNode); stack.push(newNode); }
+    else if(isEnd){ if(stack.length) stack[stack.length-1].EndTerminator = true; if(stack.length) stack.pop(); }
+    else { if(stack.length === 0){ output.push({name, variables, children: [], EndTerminator:true, _collapsed:false}); } else { stack[stack.length-1].children.push({name, variables, children: [], EndTerminator:false, _collapsed:false}); } }
+    i++; }
+  return output;
+}
+
+// --- Smart parsing helpers ----------------------------------------------
+function isBeginNodeByName(name){ const ln = (name||'').toLowerCase(); return /_beg$|_begin$|_start$/i.test(ln) || ln.endsWith('_ptree'); }
+
+function updateSmartParsing(tree){ if(!tree) return; function walk(node){ if(isBeginNodeByName(node.name)){ if(node.variables && node.variables.length>0 && node.variables[0].type === 'int'){ node.variables[0].value = node.children ? node.children.length : 0; } } if(node.children) node.children.forEach(walk); } tree.forEach(walk); }
+
+// Build a visual copy of the tree for display-only transformations (kept for library consumers)
+function buildVisualTree(tree){ const clone = JSON.parse(JSON.stringify(tree));
+  function groupAtLevel(list){
+    for(let i=0;i<list.length;i++){
+      const node = list[i];
+      if(node.children && node.children.length) groupAtLevel(node.children);
+      const upper = (node.name||'').toUpperCase();
+      if(upper.indexOf('PTREE') !== -1){
+        const first = node.variables && node.variables[0];
+        if(first && first.type === 'string'){
+          let j = i+1; const collected = [];
+          while(j < list.length){ const sib = list[j]; const sname = (sib.name||'').toUpperCase(); if(sname.indexOf('PTVAL') !== -1){ collected.push(sib); j++; } else break; }
+          if(collected.length > 0){ list.splice(i+1, collected.length); node.children = node.children || []; node.children = node.children.concat(collected); }
+        }
+      }
+    }
+  }
+  groupAtLevel(clone);
+  return clone;
+}
+
+// --- Serialization / save -----------------------------------------------
+function flattenTree(nodes, out){ nodes.forEach(n => { out.push(n); if(n.children && n.children.length) flattenTree(n.children, out); }); }
+
+function buildDistinctStrings(nodes, encoding='utf-8', encProvider){ const set = new Map(); function walk(n){ n.variables.forEach(v=>{ if(v.type==='string' && v.value !== null && v.value !== undefined){ const key = String(v.value); if(!set.has(key)) set.set(key, 0); } }); if(n.children) n.children.forEach(c=>walk(c)); } nodes.forEach(n=>walk(n)); let pos = 0; for(const k of set.keys()){ set.set(k, pos); pos += encodeStringToBytes(k, encoding, encProvider).length + 1; } return set; }
+
+function encodeEntries(flat, stringsTable, encoding='utf-8', encProvider){ const writer = new BinWriter(); for(const e of flat){ const base = e.name; const crc = crc32(new TextEncoder().encode(base)); writer.writeUint32(crc); const paramCount = e.variables.length; writer.writeUint8(paramCount); let packed = []; for(let i=0;i<Math.ceil(paramCount/4);i++){ let b=0; for(let k=0;k<4;k++){ const idx = i*4+k; if(idx < paramCount){ const t = e.variables[idx].type; let tag = t==='string'?0: t==='int'?1: t==='float'?2:3; b |= (tag & 3) << (2*k); } } packed.push(b); } for(const pb of packed) writer.writeUint8(pb); writer.writeAlignment(4, 0); for(const v of e.variables){ if(v.type==='string'){ if(v.value === null || v.value === undefined) writer.writeInt32(-1); else writer.writeInt32(stringsTable.get(String(v.value))); } else if(v.type==='int'){ writer.writeInt32(Number(v.value) || 0); } else if(v.type==='float'){ writer.writeFloat(Number(v.value) || 0.0); } else { writer.writeInt32(Number(v.value) || 0); } } } return new Uint8Array(writer.concat()); }
+
+function encodeStringsTable(stringsTable, encoding='utf-8', encProvider){ const arr = []; for(const [s, off] of Array.from(stringsTable.entries()).sort((a,b)=>a[1]-b[1])){ arr.push(encodeStringToBytes(s, encoding, encProvider)); arr.push(new Uint8Array([0])); } return concatUint8Arrays(arr); }
+function concatUint8Arrays(arrs){ let total = arrs.reduce((s,a)=>s+(a? a.length:0),0); const out = new Uint8Array(total); let p=0; for(const a of arrs){ if(!a) continue; out.set(a, p); p+=a.length; } return out; }
+
+function encodeKeyTable(uniqueKeys, encoding='utf-8', encProvider){ const writer = new BinWriter(); const headerBuf = new Uint8Array(16); writer.writeBytes(headerBuf); let keyStringParts = []; let strPos = 0; for(const k of uniqueKeys){ const crc = crc32(new TextEncoder().encode(k)); const entry = new Uint8Array(8); new DataView(entry.buffer).setUint32(0, crc, true); new DataView(entry.buffer).setInt32(4, strPos, true); writer.writeBytes(entry); const kb = encodeStringToBytes(k, encoding, encProvider); keyStringParts.push(kb); keyStringParts.push(new Uint8Array([0])); strPos += kb.length + 1; } writer.writeAlignment(0x10, 0xFF); const keyStringOffset = writer.pos; for(const p of keyStringParts) writer.writeBytes(p); writer.writeAlignment(0x10, 0xFF); const keyLength = writer.pos; const hdr = new Uint8Array(16); const dv = new DataView(hdr.buffer); dv.setInt32(0, keyLength, true); dv.setInt32(4, uniqueKeys.length, true); dv.setInt32(8, keyStringOffset, true); dv.setInt32(12, keyLength - keyStringOffset, true); writer.parts[0] = hdr; return new Uint8Array(writer.concat()); }
+
+function countFlatten(nodes){ let n=0; function walk(x){ n++; if(x.children) x.children.forEach(c=>walk(c)); } nodes.forEach(nod=>walk(nod)); return n; }
+
+function serialise(tree, options = {}){
+  // options: { encoding: 'utf-8'|'shift-jis', encProvider, trailerMarker: true }
+  const encoding = options.encoding || 'utf-8'; const encProvider = options.encProvider;
+  const flat = []; flattenTree(tree, flat);
+  const stringsTable = buildDistinctStrings(flat, encoding, encProvider);
+  const entriesBlob = encodeEntries(flat, stringsTable, encoding, encProvider);
+  const keySet = new Set(); for(const e of flat){ const base = e.name; keySet.add(base); }
+  const keyList = Array.from(keySet);
+  const keyTableBlob = encodeKeyTable(keyList, encoding, encProvider);
+  const writer = new BinWriter(); writer.writeBytes(new Uint8Array(16)); writer.writeBytes(entriesBlob); writer.writeAlignment(0x10, 0xFF);
+  const stringTableOffset = writer.pos; const stringsBlob = encodeStringsTable(stringsTable, encoding, encProvider); if(stringsBlob && stringsBlob.length){ writer.writeBytes(stringsBlob); }
+  writer.writeAlignment(0x10, 0xFF); const stringTableLength = writer.pos - stringTableOffset; writer.writeBytes(keyTableBlob);
+  // trailer
+  if(options.trailer !== false){ writer.writeBytes(new Uint8Array([0x01,0x74,0x32,0x62,0xFE])); const encByte = (encoding === 'shift-jis')?0:1; writer.writeBytes(new Uint8Array([0x01, encByte, 0x00, 0x01])); writer.writeAlignment(0x10, 0xFF); }
+  const entriesCount = countFlatten(tree);
+  const headerBuf = new Uint8Array(16); const dv = new DataView(headerBuf.buffer); dv.setInt32(0, entriesCount, true); dv.setInt32(4, stringTableOffset, true); dv.setInt32(8, stringTableLength, true); dv.setInt32(12, stringsTable.size, true);
+  writer.parts[0] = headerBuf; const finalBuf = new Uint8Array(writer.concat()); return finalBuf;
+}
+function serialize(tree, options = {}) { // for the americans :<
+  return globalThis.level5.cfgbin.serialise(tree, options)
+}
+function findTrailerIndex(buffer){ const bytes = (buffer instanceof Uint8Array) ? buffer : new Uint8Array(buffer); return findSequence(bytes, [0x01,0x74,0x32,0x62,0xFE]); }
+utils = {};
+  /**
+   * Recursively collects all nodes that match a given name.
+   * @param {Array} tree - Parsed cfg.bin tree.
+   * @param {string} name - Node name to match.
+   * @returns {Array<Object>} Matching nodes.
+   */
+  utils.findNodesByName = function(tree, name) {
+    const out = [];
+    for (const node of tree) {
+      if (node.name === name) out.push(node);
+      if (node.children && node.children.length)
+        out.push(...(utils.findNodesByName(node.children, name)));
+    }
+    return out;
+  }
+
+  /**
+   * Extract key-value pairs from variables at given indices
+   * for all nodes matching a name.
+   * @param {Array} tree - Parsed cfg.bin tree.
+   * @param {string} name - Node name to search (e.g. "BATTLE_COMMAND_INFO").
+   * @param {number} keyIndex - Index of variable for key.
+   * @param {number} valueIndex - Index of variable for value.
+   * @returns {Object} Map of { key: value } pairs.
+   */
+    utils.extractPairsByName = function(tree, name, keyIndex = 0, valueIndex = 1) {
+    const nodes = utils.findNodesByName(tree, name);
+    const out = {};
+    for (const node of nodes) {
+      const keyVar = node.variables?.[keyIndex];
+      const valVar = node.variables?.[valueIndex];
+      if (keyVar && valVar) {
+        out[keyVar.value] = valVar.value;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Flatten tree into a list of nodes (depth-first order).
+   * @param {Array} tree
+   * @returns {Array<Object>}
+   */
+   utils.flattenTree = function(tree) {
+    const out = [];
+    (function walk(nodes) {
+      for (const n of nodes) {
+        out.push(n);
+        if (n.children && n.children.length) walk(n.children);
+      }
+    })(tree);
+    return out;
+  }
+
+  /**
+   * Get all unique node names in a tree.
+   * @param {Array} tree
+   * @returns {string[]}
+   */
+  utils.getAllNames = function(tree) {
+    const flat = utils.flattenTree(tree);
+    return [...new Set(flat.map(n => n.name))];
+  }
+
+  /**
+   * Print summary of node counts by name.
+   * @param {Array} tree
+   */
+  utils.summarizeTree = function(tree) {
+    const counts = {};
+    const flat = utils.flattenTree(tree);
+    for (const n of flat) {
+      counts[n.name] = (counts[n.name] || 0) + 1;
+    }
+    console.table(counts);
+    return counts;
+  }
+
+  globalThis.level5 = globalThis.level5 || {}; 
+  globalThis.level5.cfgbin = {
+    BinReader, BinWriter, crc32, findSequence,
+    parseMytagsText, parseCfgBin, parseEntries,
+    processEntries, buildVisualTree, updateSmartParsing,
+    serialise, buildDistinctStrings, encodeEntries,
+    encodeStringsTable, encodeKeyTable, flattenTree,
+    findTrailerIndex, serialize, utils
+  };
+
+
+})();
+</script>
+<script>
+/*
+   level5-pathfinding.js
+   MIT License lib by n123git on github and n123original on discord.
+*/
+  if(typeof level5 == 'undefined') level5 = {};
+  if(typeof level5.pathfinding == 'undefined') level5.pathfinding = {};
+  level5.pathfinding.zoneColors = [
+    [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [1, 0, 1],
+    [0, 1, 1], [0.5, 0.5, 0.5], [1, 0.5, 0], [0.5, 0, 1], [0, 0.5, 0.5]
+  ];
+  level5.pathfinding.white = [1, 1, 1];
+
+  level5.pathfinding.getColorByZone = function(zone, enabled) {
+    return enabled ? (level5.pathfinding.zoneColors[zone % level5.pathfinding.zoneColors.length] || white) : white;
+  }
+
+  level5.pathfinding.float32ArrayToBase64 = function(arr) {
+    const buffer = new ArrayBuffer(arr.length * 4);
+    const view = new DataView(buffer);
+    arr.forEach((v, i) => view.setFloat32(i * 4, v, true));
+    return btoa(String.fromCharCode(...new Uint8Array(buffer)));
+  }
+
+  level5.pathfinding.uint16ArrayToBase64 = function(arr) {
+    const buffer = new ArrayBuffer(arr.length * 2);
+    const view = new DataView(buffer);
+    arr.forEach((v, i) => view.setUint16(i * 2, v, true));
+    return btoa(String.fromCharCode(...new Uint8Array(buffer)));
+  }
+
+  level5.pathfinding.generateGLTF = function(nodes, arcs, useColors) {
+    const vertexCount = nodes.length;
+    const edgeCount = arcs.length;
+
+    const positions = new Float32Array(vertexCount * 3);
+    const colors = new Float32Array(vertexCount * 3);
+    const indices = new Uint16Array(edgeCount * 2);
+
+    for (let i = 0; i < vertexCount; i++) {
+      const node = nodes[i];
+      const x = node.variables[0].value;
+      const y = node.variables[1].value;
+      const z = node.variables[2].value;
+      const zone = node.variables[3].value;
+
+      const [r, g, b] = level5.pathfinding.getColorByZone(zone, useColors);
+
+      positions.set([x, y, z], i * 3);
+      colors.set([r, g, b], i * 3);
+    }
+
+    for (let i = 0; i < edgeCount; i++) {
+      const [a, b] = [arcs[i].variables[0].value, arcs[i].variables[1].value];
+      indices.set([a, b], i * 2);
+    }
+
+    const positionBase64 = level5.pathfinding.float32ArrayToBase64(positions);
+    const colorBase64 = level5.pathfinding.float32ArrayToBase64(colors);
+    const indexBase64 = level5.pathfinding.uint16ArrayToBase64(indices);
+
+    const positionByteLength = positions.byteLength;
+    const colorByteLength = colors.byteLength;
+    const indexByteLength = indices.byteLength;
+    const totalLength = positionByteLength + colorByteLength + indexByteLength;
+
+    const combined = new Uint8Array(totalLength);
+    combined.set(new Uint8Array(positions.buffer), 0);
+    combined.set(new Uint8Array(colors.buffer), positionByteLength);
+    combined.set(new Uint8Array(indices.buffer), positionByteLength + colorByteLength);
+    const combinedBase64 = btoa(String.fromCharCode(...combined));
+
+    const gltf = {
+      asset: {
+        version: "2.0",
+        generator: "ASTARBIN glTF Exporter"
+      },
+      buffers: [
+        {
+          uri: `data:application/octet-stream;base64,${combinedBase64}`,
+          byteLength: totalLength
+        }
+      ],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: positionByteLength, target: 34962 },
+        { buffer: 0, byteOffset: positionByteLength, byteLength: colorByteLength, target: 34962 },
+        { buffer: 0, byteOffset: positionByteLength + colorByteLength, byteLength: indexByteLength, target: 34963 }
+      ],
+      accessors: [
+        {
+          bufferView: 0, componentType: 5126, count: vertexCount, type: "VEC3", byteOffset: 0,
+          min: [0, 0, 0], max: [0, 0, 0]
+        },
+        {
+          bufferView: 1, componentType: 5126, count: vertexCount, type: "VEC3", byteOffset: 0,
+          min: [0, 0, 0], max: [1, 1, 1]
+        },
+        {
+          bufferView: 2, componentType: 5123, count: edgeCount * 2, type: "SCALAR", byteOffset: 0
+        }
+      ],
+      materials: [
+        {
+          name: "VertexColorMaterial",
+          pbrMetallicRoughness: {
+            metallicFactor: 0,
+            roughnessFactor: 1,
+            baseColorFactor: [1, 1, 1, 1]
+          }
+        }
+      ],
+      meshes: [
+        {
+          primitives: [
+            {
+              attributes: { POSITION: 0, COLOR_0: 1 },
+              indices: 2,
+              mode: 1, // LINES
+              material: 0
+            }
+          ]
+        }
+      ],
+      nodes: [{ mesh: 0 }],
+      scenes: [{ nodes: [0] }],
+      scene: 0
+    };
+
+    return JSON.stringify(gltf, null, 2);
+  }
+</script>
+<script>
+
+  const fileInput = document.getElementById('fileInput');
+  const downloadBtn = document.getElementById('generateBtn'); // technically not the download button but idc :\
+  let parsedData = null;
+
+  fileInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const arrayBuffer = await file.arrayBuffer();
+    try {
+      parsedData = level5.cfgbin.parseCfgBin(arrayBuffer);
+      downloadBtn.disabled = false;
+    } catch (err) {
+      console.error('Error parsing file: ' + err.message);
+    }
+  });
+
+  
+    // UI stuff
+  document.getElementById('generateBtn').onclick = () => {
+    const useColors = document.getElementById('colorCode').checked;
+    let input = parsedData;
+    if (!input) return alert('Please insert the file first.'); // shouldn't even happen due to the disabled property but just in case lmao
+
+    let data = input.tree;
+    console.log("data", data)
+
+    const nodes = data.filter(entry => entry.name === 'NODE_INFO');
+    const arcs = data.filter(entry => entry.name === 'ARC_INFO');
+
+    if (!nodes.length) return alert('No NODE_INFO entries found.');
+    if (!arcs.length) alert('No ARC_INFO entries found. Only exporting nodes.');
+
+    const gltfContent = level5.pathfinding.generateGLTF(nodes, arcs, useColors);
+    const blob = new Blob([gltfContent], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+
+    const link = document.getElementById('downloadLink');
+    link.href = url;
+    link.style.display = 'inline-block';
+    link.textContent = `Download glTF (${nodes.length} nodes, ${arcs.length} arcs)`;
+  };
+</script>
+
+</body>
+</html>

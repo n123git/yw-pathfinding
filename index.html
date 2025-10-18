@@ -49,6 +49,7 @@
 <button id="generateBtn" disabled>Generate glTF</button>
 <a id="downloadLink" href="#" download="astar_nodes.gltf" style="display:none;">Download glTF</a>
 
+
 <script>
 /**
  * cfgbin-lib.js
@@ -92,8 +93,7 @@
  * ### Example
  * ```js
  * import cfgbin from './cfgbin-lib.js';
- * 
- * const buffer = await fs.promises.readFile('cfg.bin');
+
  * const parsed = cfgbin.parseCfgBin(buffer);
  * console.log(parsed.tree);
  * 
@@ -102,7 +102,6 @@
  * 
  * // Rebuild binary
  * const rebuilt = cfgbin.serialize(parsed.tree);
- * await fs.promises.writeFile('cfg_new.bin', Buffer.from(rebuilt));
  * ```
  *
  * ------------------------------------------------------------
@@ -248,7 +247,7 @@ function parseCfgBin(buffer, opts = {}){
   const entriesFlat = parseEntries(header.EntriesCount, entriesBuffer, keyTable, stringsMap, encodingDetected);
   const tree = processEntries(entriesFlat);
 
-  if(opts.smartParsing !== false) updateSmartParsing(tree);
+  if (opts.smartParsing === true) updateSmartParsing(tree); // fixed this to make it false by default lol mb
 
   return { header, encodingDetected, stringsMap, keyTable, entriesFlat, tree };
 }
@@ -298,7 +297,28 @@ function processEntries(entries){
 // --- Smart parsing helpers ----------------------------------------------
 function isBeginNodeByName(name){ const ln = (name||'').toLowerCase(); return /_beg$|_begin$|_start$/i.test(ln) || ln.endsWith('_ptree'); }
 
-function updateSmartParsing(tree){ if(!tree) return; function walk(node){ if(isBeginNodeByName(node.name)){ if(node.variables && node.variables.length>0 && node.variables[0].type === 'int'){ node.variables[0].value = node.children ? node.children.length : 0; } } if(node.children) node.children.forEach(walk); } tree.forEach(walk); }
+function updateSmartParsing(tree){ // patched it to be safer and fix a mistake (it was supposed to target the last param, not the first; I accidentally used old logic)
+  if (!tree) return;
+
+  function walk(node) {
+    if (isBeginNodeByName(node.name)) {
+      const vars = node.variables;
+      if (Array.isArray(vars) && vars.length > 0) {
+        const last = vars[vars.length - 1];
+        if (last.type === 'int') {
+          last.value = node.children ? node.children.length : 0;
+        }
+      }
+    }
+
+    if (node.children) {
+      node.children.forEach(walk);
+    }
+  }
+
+  tree.forEach(walk);
+}
+
 
 // Build a visual copy of the tree for display-only transformations (kept for library consumers)
 function buildVisualTree(tree){ const clone = JSON.parse(JSON.stringify(tree));
@@ -579,9 +599,10 @@ utils = {};
 
     return JSON.stringify(gltf, null, 2);
   }
+  level5.pathfinding.version = 1.1;
 </script>
 <script>
-
+  console.log("level5-pathfinding ver", level5.pathfinding.version)
   const fileInput = document.getElementById('fileInput');
   const downloadBtn = document.getElementById('generateBtn'); // technically not the download button but idc :\
   let parsedData = null;

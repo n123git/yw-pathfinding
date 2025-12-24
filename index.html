@@ -54,56 +54,7 @@
 /**
  * cfgbin-lib.js
  * ------------------------------------------------------------
- * MIT License lib by n123git on github and n123original on discord. places API functions in globalThis.level5.cfgbin
- * ------------------------------------------------------------
- *
- *
- * - parseCfgBin(buffer, options?) -> { header, tree, entriesFlat, ... }
- *   Parses a cfg.bin binary file into structured JS objects.
- *   - `buffer`: ArrayBuffer or Uint8Array input.
- *   - `options.encProvider`: optional { encode, decode } provider for SHIFT_JIS.
- *   - Returns metadata, entries, string table, key table, and parsed tree.
- *
- * - **serialise.(tree, options?)** → Uint8Array
- *   Serialises a JS tree back into binary cfg.bin format.9
- *   - `tree`: Parsed tree or modified data.
- *   - `options.encoding`: 'utf-8' | 'shift-jis'.
- *   - `options.trailer`: append encoding marker (default: true).
- *   - Returns a new Uint8Array representing the rebuilt binary file.
- *
- * - **parseMytagsText(text)** → Object
- *   Parses a simple MyTags text format into a tag mapping.
- *
- * - **buildVisualTree(tree)** → Object
- *   Groups related entries into structured hierarchy (for display).
- *
- * - **updateSmartParsing(tree)**
- *   Adjusts certain node values based on smart heuristics.
- *
- * ### Utilities
- * - **crc32(buffer)** — Compute CRC32 hash (used for key names).
- * - **findSequence(buffer, seq)** — Find a byte sequence in buffer.
- * - **flattenTree(tree, out)** — Flatten hierarchical nodes into array.
- * - **findTrailerIndex(buffer)** — Find trailer marker position.
- *
- * ### Internal Classes
- * - **BinReader(buffer)** — Binary stream reader with DataView helpers.
- * - **BinWriter()** — Binary stream writer for constructing new buffers.
- *
- * ### Example
- * ```js
- * import cfgbin from './cfgbin-lib.js';
-
- * const parsed = cfgbin.parseCfgBin(buffer);
- * console.log(parsed.tree);
- * 
- * // Modify entries
- * parsed.tree[0].variables[0].value = 42;
- * 
- * // Rebuild binary
- * const rebuilt = cfgbin.serialize(parsed.tree);
- * ```
- *
+ * MIT License lib by n123git on github and n123original on discord. functions in globalThis.level5.cfgbin
  * ------------------------------------------------------------
  */
 
@@ -500,105 +451,171 @@ utils = {};
     return btoa(String.fromCharCode(...new Uint8Array(buffer)));
   }
 
-  level5.pathfinding.generateGLTF = function(nodes, arcs, useColors) {
-    const vertexCount = nodes.length;
-    const edgeCount = arcs.length;
+  level5.pathfinding.getHeatColor = function(value, min, max) {
+    const t = Math.max(0, Math.min(1, (value - min) / (max - min)));
+    // blue -> cyan -> green -> yellow -> red
+    const r = Math.min(1, Math.max(0, 1.5 * (t - 0.5)));
+    const g = Math.sin(Math.PI * t);
+    const b = Math.min(1, Math.max(0, 1.5 * (0.5 - t)));
+    return [r, g, b];
+  };
 
-    const positions = new Float32Array(vertexCount * 3);
-    const colors = new Float32Array(vertexCount * 3);
-    const indices = new Uint16Array(edgeCount * 2);
 
-    for (let i = 0; i < vertexCount; i++) {
-      const node = nodes[i];
-      const x = node.variables[0].value;
-      const y = node.variables[1].value;
-      const z = node.variables[2].value;
-      const zone = node.variables[3].value;
+level5.pathfinding.generateGLTF = function(nodes, arcs) {
+  const vertexCount = nodes.length;
 
-      const [r, g, b] = level5.pathfinding.getColorByZone(zone, useColors);
-
-      positions.set([x, y, z], i * 3);
-      colors.set([r, g, b], i * 3);
-    }
-
-    for (let i = 0; i < edgeCount; i++) {
-      const [a, b] = [arcs[i].variables[0].value, arcs[i].variables[1].value];
-      indices.set([a, b], i * 2);
-    }
-
-    const positionBase64 = level5.pathfinding.float32ArrayToBase64(positions);
-    const colorBase64 = level5.pathfinding.float32ArrayToBase64(colors);
-    const indexBase64 = level5.pathfinding.uint16ArrayToBase64(indices);
-
-    const positionByteLength = positions.byteLength;
-    const colorByteLength = colors.byteLength;
-    const indexByteLength = indices.byteLength;
-    const totalLength = positionByteLength + colorByteLength + indexByteLength;
-
-    const combined = new Uint8Array(totalLength);
-    combined.set(new Uint8Array(positions.buffer), 0);
-    combined.set(new Uint8Array(colors.buffer), positionByteLength);
-    combined.set(new Uint8Array(indices.buffer), positionByteLength + colorByteLength);
-    const combinedBase64 = btoa(String.fromCharCode(...combined));
-
-    const gltf = {
-      asset: {
-        version: "2.0",
-        generator: "ASTARBIN glTF Exporter"
-      },
-      buffers: [
-        {
-          uri: `data:application/octet-stream;base64,${combinedBase64}`,
-          byteLength: totalLength
-        }
-      ],
-      bufferViews: [
-        { buffer: 0, byteOffset: 0, byteLength: positionByteLength, target: 34962 },
-        { buffer: 0, byteOffset: positionByteLength, byteLength: colorByteLength, target: 34962 },
-        { buffer: 0, byteOffset: positionByteLength + colorByteLength, byteLength: indexByteLength, target: 34963 }
-      ],
-      accessors: [
-        {
-          bufferView: 0, componentType: 5126, count: vertexCount, type: "VEC3", byteOffset: 0,
-          min: [0, 0, 0], max: [0, 0, 0]
-        },
-        {
-          bufferView: 1, componentType: 5126, count: vertexCount, type: "VEC3", byteOffset: 0,
-          min: [0, 0, 0], max: [1, 1, 1]
-        },
-        {
-          bufferView: 2, componentType: 5123, count: edgeCount * 2, type: "SCALAR", byteOffset: 0
-        }
-      ],
-      materials: [
-        {
-          name: "VertexColorMaterial",
-          pbrMetallicRoughness: {
-            metallicFactor: 0,
-            roughnessFactor: 1,
-            baseColorFactor: [1, 1, 1, 1]
-          }
-        }
-      ],
-      meshes: [
-        {
-          primitives: [
-            {
-              attributes: { POSITION: 0, COLOR_0: 1 },
-              indices: 2,
-              mode: 1, // LINES
-              material: 0
-            }
-          ]
-        }
-      ],
-      nodes: [{ mesh: 0 }],
-      scenes: [{ nodes: [0] }],
-      scene: 0
-    };
-
-    return JSON.stringify(gltf, null, 2);
+  /* ---------- compute PathDensityBias range ---------- */
+  let minBias = Infinity;
+  let maxBias = -Infinity;
+  for (const node of nodes) {
+    const bias = node.variables[3].value; // PathDensityBias
+    minBias = Math.min(minBias, bias);
+    maxBias = Math.max(maxBias, bias);
   }
+  if (minBias === maxBias) maxBias++;
+
+  /* ---------- helpers ---------- */
+  function heatColor(v) {
+    const t = Math.max(0, Math.min(1, (v - minBias) / (maxBias - minBias)));
+    return [
+      Math.min(1, Math.max(0, 1.5 * (t - 0.5))), // R
+      Math.sin(Math.PI * t),                     // G
+      Math.min(1, Math.max(0, 1.5 * (0.5 - t)))  // B
+    ];
+  }
+
+  /* ---------- node buffers ---------- */
+  const positions = [];
+  const colors = [];
+
+  /* ---------- hub marker buffers ---------- */
+  const hubPositions = [];
+  const hubColors = [];
+  const hubIndices = [];
+
+  /* ---------- node generation ---------- */
+  for (let i = 0; i < vertexCount; i++) {
+    const node = nodes[i];
+    const x = node.variables[0].value;
+    const y = node.variables[1].value;
+    const z = node.variables[2].value;
+    const bias = node.variables[3].value;
+    const isHub = node.variables[4].value;
+
+    const [r, g, b] = heatColor(bias);
+
+    positions.push(x, y, z);
+    colors.push(r, g, b);
+
+    /* hub vertical marker */
+    if (isHub) {
+      const base = hubPositions.length / 3;
+      hubPositions.push(x, y, z);
+      hubPositions.push(x, y + 1.5, z); // vertical line
+      hubColors.push(1, 1, 1, 1, 1, 1);
+      hubIndices.push(base, base + 1);
+    }
+  }
+
+  /* ---------- arc buffers ---------- */
+  const arcNormal = [];
+  const arcRed = [];
+  const arcGreen = [];
+
+  for (const arc of arcs) {
+    const a = arc.variables[0].value;
+    const b = arc.variables[1].value;
+    const flag = arc.variables[3].value; // ARC param 4
+
+    if (flag === 1) arcRed.push(a, b);
+    else if (flag === 2) arcGreen.push(a, b);
+    else arcNormal.push(a, b);
+  }
+
+  /* ---------- typed arrays ---------- */
+  const posArr = new Float32Array(positions);
+  const colArr = new Float32Array(colors);
+  const hubPosArr = new Float32Array(hubPositions);
+  const hubColArr = new Float32Array(hubColors);
+
+  const arcNormalArr = new Uint16Array(arcNormal);
+  const arcRedArr = new Uint16Array(arcRed);
+  const arcGreenArr = new Uint16Array(arcGreen);
+  const hubIdxArr = new Uint16Array(hubIndices);
+
+  /* ---------- buffer packing ---------- */
+  const buffers = [
+    posArr, colArr,
+    hubPosArr, hubColArr,
+    arcNormalArr, arcRedArr, arcGreenArr,
+    hubIdxArr
+  ];
+
+  let offset = 0;
+  const views = [];
+  const combined = [];
+
+  for (const buf of buffers) {
+    views.push({ offset, length: buf.byteLength });
+    combined.push(new Uint8Array(buf.buffer));
+    offset += buf.byteLength;
+  }
+
+  const merged = new Uint8Array(offset);
+  let ptr = 0;
+  for (const c of combined) {
+    merged.set(c, ptr);
+    ptr += c.byteLength;
+  }
+
+  const base64 = btoa(String.fromCharCode(...merged));
+
+  /* ---------- glTF ---------- */
+  return JSON.stringify({
+    asset: { version: "2.0", generator: "yw-pathfinding::astarbin" },
+    buffers: [{ uri: `data:application/octet-stream;base64,${base64}`, byteLength: merged.byteLength }],
+    bufferViews: [
+      { buffer: 0, byteOffset: views[0].offset, byteLength: views[0].length, target: 34962 }, // node pos
+      { buffer: 0, byteOffset: views[1].offset, byteLength: views[1].length, target: 34962 }, // node col
+      { buffer: 0, byteOffset: views[2].offset, byteLength: views[2].length, target: 34962 }, // hub pos
+      { buffer: 0, byteOffset: views[3].offset, byteLength: views[3].length, target: 34962 }, // hub col
+      { buffer: 0, byteOffset: views[4].offset, byteLength: views[4].length, target: 34963 }, // arc 0
+      { buffer: 0, byteOffset: views[5].offset, byteLength: views[5].length, target: 34963 }, // arc 1
+      { buffer: 0, byteOffset: views[6].offset, byteLength: views[6].length, target: 34963 }, // arc 2
+      { buffer: 0, byteOffset: views[7].offset, byteLength: views[7].length, target: 34963 }  // hub idx
+    ],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: vertexCount, type: "VEC3" },
+      { bufferView: 1, componentType: 5126, count: vertexCount, type: "VEC3" },
+
+      { bufferView: 2, componentType: 5126, count: hubPositions.length / 3, type: "VEC3" },
+      { bufferView: 3, componentType: 5126, count: hubColors.length / 3, type: "VEC3" },
+
+      { bufferView: 4, componentType: 5123, count: arcNormalArr.length, type: "SCALAR" },
+      { bufferView: 5, componentType: 5123, count: arcRedArr.length, type: "SCALAR" },
+      { bufferView: 6, componentType: 5123, count: arcGreenArr.length, type: "SCALAR" },
+      { bufferView: 7, componentType: 5123, count: hubIdxArr.length, type: "SCALAR" }
+    ],
+    materials: [
+      { name: "ArcNormal", pbrMetallicRoughness: { baseColorFactor: [0.6, 0.6, 0.6, 1] }},
+      { name: "ArcRed",    pbrMetallicRoughness: { baseColorFactor: [1, 0, 0, 1] }},
+      { name: "ArcGreen",  pbrMetallicRoughness: { baseColorFactor: [0, 1, 0, 1] }},
+      { name: "HubMarker", pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 1] }}
+    ],
+    meshes: [{
+      primitives: [
+        { attributes: { POSITION: 0, COLOR_0: 1 }, indices: 4, mode: 1, material: 0 },
+        { attributes: { POSITION: 0, COLOR_0: 1 }, indices: 5, mode: 1, material: 1 },
+        { attributes: { POSITION: 0, COLOR_0: 1 }, indices: 6, mode: 1, material: 2 },
+        { attributes: { POSITION: 2, COLOR_0: 3 }, indices: 7, mode: 1, material: 3 }
+      ]
+    }],
+    nodes: [{ mesh: 0 }],
+    scenes: [{ nodes: [0] }],
+    scene: 0
+  }, null, 2);
+};
+
   level5.pathfinding.version = 1.1;
 </script>
 <script>

@@ -43,7 +43,7 @@
 <br />
 <label>
   <input type="checkbox" id="colorCode" checked>
-  Colour-Code Nodes by Zone
+  Colour-Code Nodes by Weights
 </label>
 <br />
 <button id="generateBtn" disabled>Generate glTF</button>
@@ -500,7 +500,7 @@ level5.pathfinding.generateGLTF = function(nodes, arcs) {
     const y = node.variables[1].value;
     const z = node.variables[2].value;
     const bias = node.variables[3].value;
-    const isHub = node.variables[4].value;
+    const IsSearchAnchorNode = node.variables[4].value;
 
     const [r, g, b] = heatColor(bias);
 
@@ -508,7 +508,7 @@ level5.pathfinding.generateGLTF = function(nodes, arcs) {
     colors.push(r, g, b);
 
     /* hub vertical marker */
-    if (isHub) {
+    if (IsSearchAnchorNode) {
       const base = hubPositions.length / 3;
       hubPositions.push(x, y, z);
       hubPositions.push(x, y + 1.5, z); // vertical line
@@ -525,10 +525,10 @@ level5.pathfinding.generateGLTF = function(nodes, arcs) {
   for (const arc of arcs) {
     const a = arc.variables[0].value;
     const b = arc.variables[1].value;
-    const flag = arc.variables[3].value; // ARC param 4
+    const dirLock = arc.variables[3].value; // ARC param 4
 
-    if (flag === 1) arcRed.push(a, b);
-    else if (flag === 2) arcGreen.push(a, b);
+    if (dirLock == 1) arcRed.push(a, b);
+    else if (dirLock == 2) arcGreen.push(a, b);
     else arcNormal.push(a, b);
   }
 
@@ -616,7 +616,7 @@ level5.pathfinding.generateGLTF = function(nodes, arcs) {
   }, null, 2);
 };
 
-  level5.pathfinding.version = 1.1;
+  level5.pathfinding.version = 1.11;
 </script>
 <script>
   console.log("level5-pathfinding ver", level5.pathfinding.version)
